@@ -1,0 +1,69 @@
+from google.colab import drive
+drive.mount('/content/drive')
+
+!apt-get -q update
+!apt-get -q install -y tesseract-ocr tesseract-ocr-tur poppler-utils
+!pip -q install -q pdf2image pillow pytesseract opencv-python pypdf tqdm
+
+INP = "/content/drive/MyDrive/<YOUR_FOLDER>/<YOUR_FILE>.pdf"
+OUT_PDF = "/content/drive/MyDrive/<OUTPUT_FOLDER>/output.pdf"
+OUT_TXT = "/content/drive/MyDrive/<OUTPUT_FOLDER>/output.txt"
+
+WORKDIR = "/content/fast_pages"
+DPI = 300    # hız için 300 (gerekirse 250)
+PSM = "6"    # tek sütun hızlı mod
+
+import os, io, shutil, pytesseract, cv2
+from pdf2image import convert_from_path
+from pypdf import PdfWriter, PdfReader
+from tqdm.auto import tqdm
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+shutil.rmtree(WORKDIR, ignore_errors=True)
+os.makedirs(WORKDIR, exist_ok=True)
+
+pages = convert_from_path(INP, dpi=DPI, fmt="png", output_folder=WORKDIR)
+print("Toplam sayfa:", len(pages))
+
+def preprocess_and_ocr(idx):
+    # her süreç kendi sayfasını işler
+    raw = f"{WORKDIR}/page_{idx:04d}.png"
+    pages[idx-1].save(raw)
+
+    # Hızlı ön-işleme: gri + OTSU (adaptif yok; hızlı)
+    img = cv2.imread(raw, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return idx, "[skipped]", None
+    _, bw = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+    proc = f"{WORKDIR}/page_{idx:04d}_bw.png"
+    cv2.imwrite(proc, bw)
+
+    cfg = f"--oem 1 --psm {PSM}"
+    txt = pytesseract.image_to_string(proc, lang="tur", config=cfg)  # tek dil -> hızlı
+    pdf_bytes = pytesseract.image_to_pdf_or_hocr(proc, lang="tur", config=cfg, extension="pdf")
+    return idx, txt, pdf_bytes
+
+writer = PdfWriter()
+texts = [None]*len(pages)
+
+# Çekirdek kadar süreç kullan
+max_workers = os.cpu_count() or 2
+with ProcessPoolExecutor(max_workers=max_workers) as ex:
+    futs = [ex.submit(preprocess_and_ocr, i) for i in range(1, len(pages)+1)]
+    for fut in tqdm(as_completed(futs), total=len(futs), desc="FAST OCR"):
+        i, txt, pdf_b = fut.result()
+        texts[i-1] = f"--- Sayfa {i} ---\n{txt.strip()}\n"
+        if pdf_b:
+            reader = PdfReader(io.BytesIO(pdf_b))
+            for p in reader.pages:
+                writer.add_page(p)
+        else:
+            # boş sayfa ekle (nadir)
+            writer.add_blank_page(width=595, height=842)
+
+with open(OUT_PDF, "wb") as f:
+    writer.write(f)
+with open(OUT_TXT, "w", encoding="utf-8") as f:
+    f.writelines(texts)
+
+print("✅ Bitti\nPDF:", OUT_PDF, "\nTXT:", OUT_TXT)
