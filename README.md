@@ -57,6 +57,9 @@ File	Description
 *_FAST_manual.txt	Extracted plain text
 
 
+
+
+
 🇹🇷 TÜRKÇE (Turkish Version)
 TR | EN
 FAST PDF OCR (Türkçe)
